@@ -1,64 +1,248 @@
 <!DOCTYPE html>
-<html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Pintura JavaScript example project</title>
-        <link
-            rel="stylesheet"
-            href="./node_modules/@pqina/pintura/pintura.css"
-        />
-        <link rel="stylesheet" href="./styles.css" />
-    </head>
-    <body>
-        <h1>Pintura Image Editor</h1>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>محرر المانجا مع Pintura</title>
+    <link rel="stylesheet" href="./node_modules/@pqina/pintura/pintura.css" />
+    <link rel="stylesheet" href="./styles.css" />
+    <style>
+        /* يمكن إضافة تنسيقات إضافية هنا إذا لزم الأمر */
+        body { padding: 1em; }
+        .controls button { margin: 5px; padding: 8px 15px; cursor: pointer; }
+        .status { margin-top: 10px; font-style: italic; }
+        .inline-editor { border: 1px solid #ccc; margin-top: 10px; }
+        .inline-result { margin-top: 10px; border: 1px dashed #aaa; min-height: 50px; }
+        img { max-width: 100%; display: block; /* لمنع مسافة إضافية تحت الصورة */ }
+        /* لإظهار حالة التحميل */
+        .loading {
+            position: fixed; /* أو absolute بالنسبة للحاوية */
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 20px;
+            border-radius: 5px;
+            z-index: 1000; /* فوق كل شيء */
+            display: none; /* يظهر عند التحميل */
+            text-align: center;
+        }
+        .loading.active { display: block; }
+    </style>
+</head>
+<body>
+    <h1>محرر المانجا مع Pintura</h1>
 
-        <ul>
-            <li><a href="/index.html">Append</a></li>
-            <li><a href="/modal.html">Modal</a></li>
-            <li><a href="/overlay.html">Overlay</a></li>
-        </ul>
+    <div class="controls">
+        <button id="btnLoadOriginal">تحميل الصورة الأصلية</button>
+        <button id="btnWhiten">تبييض الفقاعات</button>
+        <button id="btnTranslateAuto">تبييض وترجمة تلقائي</button>
+    </div>
 
-        <div class="inline-editor" style="width: 90vw; height: 600px"></div>
-        <p><img class="inline-result" src="" alt="" /></p>
+    <div id="statusMessage" class="status"></div>
 
-        <script type="module">
-            import { appendDefaultEditor } from './node_modules/@pqina/pintura/pintura.js';
+    <div class="inline-editor" style="width: 90vw; height: 600px"></div>
 
-            const editor = appendDefaultEditor('.inline-editor', {
-                src: './image.jpeg',
-                stickers: [
-                    ['Emoji', ['⭐️', '😊', '👍', '👎', '☀️', '🌤', '🌥']],
-                    [
-                        'Markers',
-                        [
-                            {
-                                src: 'sticker-one.svg',
-                                width: '5%',
-                                alt: 'One',
-                            },
-                            {
-                                src: 'sticker-two.svg',
-                                width: '5%',
-                                alt: 'Two',
-                            },
-                            {
-                                src: 'sticker-three.svg',
-                                width: '5%',
-                                alt: 'Three',
-                            },
-                        ],
-                    ],
-                ],
+    <h2>النتيجة النهائية (بعد الحفظ):</h2>
+    <p><img class="inline-result" src="" alt="النتيجة النهائية" /></p>
+
+    <div id="loadingIndicator" class="loading">
+        <p>جاري المعالجة...</p>
+        <p id="loadingDetail"></p>
+    </div>
+
+    <script type="module">
+        import { appendDefaultEditor } from './node_modules/@pqina/pintura/pintura.js';
+
+        const editorContainer = document.querySelector('.inline-editor');
+        const resultImage = document.querySelector('.inline-result');
+        const btnLoadOriginal = document.getElementById('btnLoadOriginal');
+        const btnWhiten = document.getElementById('btnWhiten');
+        const btnTranslateAuto = document.getElementById('btnTranslateAuto');
+        const statusMessage = document.getElementById('statusMessage');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const loadingDetail = document.getElementById('loadingDetail');
+
+        const originalImageSrc = './image.jpeg'; // مسار الصورة الأصلية
+
+        // عنوان URL للواجهة الخلفية (تأكد من أنه صحيح)
+        const backendUrl = 'http://localhost:5000'; // أو 127.0.0.1:5000
+
+        // --- تهيئة محرر Pintura ---
+        let editor = appendDefaultEditor(editorContainer, {
+            src: originalImageSrc,
+            // يمكنك إضافة إعدادات Pintura أخرى هنا (ملصقات، أدوات، إلخ)
+             imageReader: {
+                preprocessImageFile: (file) => new Promise((resolve) => {
+                    // قراءة الملف كـ base64 للتأكد من أن لدينا الصيغة المطلوبة
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        const fileInfo = {
+                            name: file.name,
+                            size: file.size,
+                            type: file.type,
+                            base64: e.target.result // سيكون base64 data URL
+                        };
+                        // Pintura يحتاج إلى File أو Blob, ليس بالضرورة تعديل هنا
+                        // لكننا سنحتاج للـ base64 عند الإرسال للخادم
+                        resolve(file); // إعادة الملف الأصلي لـ Pintura
+                    };
+                    reader.onerror = (e) => {
+                        console.error("FileReader error:", e);
+                        updateStatus("خطأ في قراءة الملف.", true);
+                        resolve(file); // حاول الاستمرار بالملف الأصلي
+                    }
+                    reader.readAsDataURL(file); // قراءة كـ base64 data URL
+                })
+            }
+        });
+
+        console.log('Pintura editor initialized');
+
+        // --- دوال مساعدة ---
+        function updateStatus(message, isError = false) {
+            statusMessage.textContent = message;
+            statusMessage.style.color = isError ? 'red' : 'green';
+            console.log(message);
+        }
+
+        function showLoading(detail = '') {
+            loadingDetail.textContent = detail;
+            loadingIndicator.classList.add('active');
+        }
+
+        function hideLoading() {
+            loadingIndicator.classList.remove('active');
+        }
+
+        async function processImageOnBackend(endpoint, detailText) {
+            showLoading(detailText);
+            updateStatus(`جاري ${detailText}...`);
+
+            try {
+                // الحصول على بيانات الصورة الحالية من Pintura كـ Blob
+                // نحتاج إلى تحويل Blob إلى Base64 لإرساله
+                const result = await editor.processImage(); // يعيد كائن بنتيجة المعالجة
+                const blob = result.dest;
+
+                const base64String = await blobToBase64(blob);
+                if (!base64String) {
+                    throw new Error("فشل تحويل الصورة إلى Base64");
+                }
+
+                console.log(`Sending image to ${endpoint}...`);
+                const response = await fetch(`${backendUrl}${endpoint}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ image: base64String }), // إرسال base64 نقي
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ error: `HTTP Error: ${response.status}` }));
+                    throw new Error(`فشل الطلب للخادم: ${errorData.error || response.statusText}`);
+                }
+
+                const responseData = await response.json();
+
+                if (responseData.image) {
+                    console.log('Image processed successfully by backend.');
+                    // تحميل الصورة المستلمة (base64) في Pintura
+                    // Pintura يتوقع URL أو Blob/File, نحتاج تحويل base64 data URL
+                    const newImageSrc = `data:image/png;base64,${responseData.image}`; // افترض PNG كصيغة إخراج من الخادم
+                    await editor.loadImage(newImageSrc); // استخدام loadImage لتحديث المحرر
+                    updateStatus(`${detailText} اكتمل بنجاح.`);
+                } else {
+                    throw new Error("لم يتم استلام صورة صالحة من الخادم.");
+                }
+
+            } catch (error) {
+                console.error(`Error during ${detailText}:`, error);
+                updateStatus(`خطأ أثناء ${detailText}: ${error.message}`, true);
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // دالة لتحويل Blob إلى base64 (بدون بادئة data:URL)
+        function blobToBase64(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    // الحصول على base64 وإزالة البادئة
+                    const base64Data = reader.result;
+                    if (typeof base64Data === 'string') {
+                        resolve(base64Data.split(',', 1)[0] === 'data:application/octet-stream;base64'
+                               ? base64Data.split(',', 2)[1]
+                               : base64Data.split(',', 2)[1] || ''); // قد لا يكون هناك بادئة أحياناً أو تكون مختلفة
+                    } else {
+                         reject(new Error("FileReader did not return a string."));
+                    }
+                };
+                reader.onerror = (error) => {
+                    console.error("FileReader error:", error);
+                    reject(error);
+                };
+                reader.readAsDataURL(blob);
             });
+        }
 
-            editor.on('load', (res) => console.log('inline result', res));
 
-            editor.on('process', (res) =>
-                document
-                    .querySelector('.inline-result')
-                    .setAttribute('src', URL.createObjectURL(res.dest))
-            );
-        </script>
-    </body>
+        // --- ربط الأحداث ---
+
+        // تحميل الصورة الأصلية مجدداً
+        btnLoadOriginal.addEventListener('click', async () => {
+            updateStatus("جاري تحميل الصورة الأصلية...");
+            showLoading("تحميل الأصلي");
+            try {
+                await editor.loadImage(originalImageSrc);
+                updateStatus("تم تحميل الصورة الأصلية.");
+            } catch (error) {
+                console.error("Error loading original image:", error);
+                updateStatus("خطأ في تحميل الصورة الأصلية.", true);
+            } finally {
+                hideLoading();
+            }
+        });
+
+        // زر التبييض
+        btnWhiten.addEventListener('click', () => {
+            processImageOnBackend('/whiten', 'تبييض الفقاعات');
+        });
+
+        // زر الترجمة التلقائي
+        btnTranslateAuto.addEventListener('click', () => {
+            processImageOnBackend('/translate_auto', 'تبييض وترجمة تلقائي');
+        });
+
+        // عند انتهاء المعالجة في Pintura (مثل الضغط على زر الحفظ)
+        editor.on('process', (res) => {
+            console.log('Pintura process event:', res);
+            const imageUrl = URL.createObjectURL(res.dest);
+            resultImage.setAttribute('src', imageUrl);
+             updateStatus("تم حفظ الصورة من Pintura. يمكنك الآن تحميلها أو استخدامها.");
+            // يمكنك إضافة منطق لتحميل الصورة هنا إذا أردت
+        });
+
+        // للتأكد من أن المحرر جاهز
+        editor.on('load', (res) => {
+             console.log('Pintura load event:', res);
+             updateStatus("المحرر جاهز.");
+        });
+
+        editor.on('loaderror', (err) => {
+             console.error('Pintura load error:', err);
+             updateStatus(`خطأ في تحميل الصورة داخل Pintura: ${err.message || err.status}`, true);
+        });
+
+         editor.on('processerror', (err) => {
+             console.error('Pintura process error:', err);
+             updateStatus(`خطأ أثناء معالجة Pintura: ${err.message || err.status}`, true);
+        });
+
+
+    </script>
+</body>
 </html>
